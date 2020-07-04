@@ -17,7 +17,7 @@ __all__ = [
     "manhattan_median",
     "std_distance",
     "euclidean_median",
-    "ellipse",,
+    "ellipse",
     "minimum_area_rectangle",
     "minimum_bounding_rectangle",
     "skyum",
