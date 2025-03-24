@@ -681,83 +681,92 @@ def _(points: np.ndarray) -> tuple[float, float, float]:
     sy = np.sqrt(sy)
     return sx, sy, -theta
 
-def ellipse_w(points, weight_column=None, method=2, 
-             crimestatCorr=True, degfreedCorr=True):
+
+def ellipse_w(points, weight_column=None, method="crimestat", 
+              crimestatCorr=True, degfreedCorr=True):
+    """
+    Computes a weighted standard deviational ellipse for a set of point geometries.
+
+    Parameters:
+        points (GeoDataFrame): GeoPandas object with Point geometries.
+        weight_column (str, optional): Name of the column with weights.
+        method (str): Correction method to apply. Must be 'crimestat' or 'yuill'.
+        crimestatCorr (bool): Apply CrimeStat correction if method == 'yuill'.
+        degfreedCorr (bool): Apply degrees-of-freedom correction if method == 'yuill'.
+
+    Returns:
+        tuple: (major_axis_length, minor_axis_length, rotation_angle,
+                mean_x, mean_y)
+    """
+    if method not in ("crimestat", "yuill"):
+        raise ValueError("`method` must be either 'crimestat' or 'yuill'")
+
+    # Extract coordinates
     x = points.geometry.x
     y = points.geometry.y
-    if weight_column:
-        w = points[weight_column]
-        print('weight_column')
-    else:
-        w = np.ones(x.shape[0])
-   
-    sumx = (x * w).sum()
-    sumy = (y * w).sum()
-    sumw = w.sum()
-    meanx = sumx / sumw
-    meany = sumy / sumw
 
+    # Set weights
+    if weight_column:
+        w = points[weight_column].to_numpy()
+    else:
+        w = np.ones(len(points))
+
+    # Weighted means
+    sumw = w.sum()
+    meanx = np.average(x, weights=w)
+    meany = np.average(y, weights=w)
+
+    # Centered coordinates
     xm = x - meanx
     ym = y - meany
-    xyw = (xm * ym * w).sum()
-    x2w = (xm * xm * w).sum()
-    y2w = (ym * ym * w).sum()
 
-    # angle
+    # Weighted second moments
+    xyw = np.sum(xm * ym * w)
+    x2w = np.sum(xm**2 * w)
+    y2w = np.sum(ym**2 * w)
+
+    # Rotation angles (theta1, theta2)
     den = 2 * xyw
     left = x2w - y2w
-    right = np.sqrt( (x2w - y2w)**2 + 4 * xyw * xyw)
-    num1 = left + right
-    tantheta1 = - num1 / den
-    num2 = left - right
-    tantheta2 = - num2 / den
-    theta1 = np.arctan(tantheta1) # clockwise rotation of y-axix
-    theta2 = np.arctan(tantheta2) 
+    right = np.sqrt(left**2 + 4 * xyw**2)
     
-    
+    if den == 0:
+        theta1 = 0
+        theta2 = np.pi / 2
+    else:
+        theta1 = np.arctan(-(left + right) / den)
+        theta2 = np.arctan(-(left - right) / den)
 
-    # semi-major/minor axis length
-
-    term1 = (w * (ym * np.cos(theta1) - xm * np.sin(theta1))**2).sum()
-    term2 = (w * (ym * np.cos(theta2) - xm * np.sin(theta2))**2).sum()
+    # Axis lengths
+    term1 = np.sum(w * (ym * np.cos(theta1) - xm * np.sin(theta1))**2)
+    term2 = np.sum(w * (ym * np.cos(theta2) - xm * np.sin(theta2))**2)
 
     sx = np.sqrt(term1 / sumw)
     sy = np.sqrt(term2 / sumw)
 
+    # Corrections
+    n = len(points)
+    if method == "crimestat":
+        correction = (np.sqrt(2) * np.sqrt(n)) / np.sqrt(n - 2)
+        sx *= correction
+        sy *= correction
+    elif method == "yuill":
+        if crimestatCorr:
+            sx *= np.sqrt(2)
+            sy *= np.sqrt(2)
+        if degfreedCorr:
+            sx *= np.sqrt(n) / np.sqrt(n - 2)
+            sy *= np.sqrt(n) / np.sqrt(n - 2)
 
+    # Assign major/minor axis and corresponding angle
+    if sy > sx:
+        major_axis, minor_axis = sy, sx
+        major_angle, minor_angle = theta1, theta2
+    else:
+        major_axis, minor_axis = sx, sy
+        major_angle, minor_angle = theta2, theta1
 
-    # corrections
-    n = xm.shape[0]
-    sqrn = np.sqrt(n)
-    sqr2 = np.sqrt(2)
-    sqrdof = np.sqrt(n - 2)
-    
-    if method == 2:
-        sx = sx * (sqr2 * sqrn / sqrdof )
-        sy = sy * (sqr2 * sqrn / sqrdof )
-        print('method 2')
-    if crimestatCorr and method !=2:
-        sx *= sqr2
-        sy *= sqr2
-        print('crimestatCorr')
-
-    if degfreedCorr and method !=2:
-        sx *= sqrn / sqrdof
-        sy *= sqrn / sqrdof
-        print('degreedCorr')
-
-    majorangle = theta1
-    minorangle = theta2
-    majoraxis = sy
-    minoraxis = sx
-    if sy < sx:
-        majorangle = theta2
-        minorangle = theta1
-        majoraxis = sx
-        minoraxis = sy
-
-    return majoraxis, minoraxis, majorangle, meanx, meany
-    
+    return major_axis, minor_axis, major_angle
 
 
 @ellipse.register
