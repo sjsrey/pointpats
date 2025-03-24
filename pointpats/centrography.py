@@ -681,6 +681,84 @@ def _(points: np.ndarray) -> tuple[float, float, float]:
     sy = np.sqrt(sy)
     return sx, sy, -theta
 
+def ellipse_w(points, weight_column=None, method=2, 
+             crimestatCorr=True, degfreedCorr=True):
+    x = points.geometry.x
+    y = points.geometry.y
+    if weight_column:
+        w = points[weight_column]
+        print('weight_column')
+    else:
+        w = np.ones(x.shape[0])
+   
+    sumx = (x * w).sum()
+    sumy = (y * w).sum()
+    sumw = w.sum()
+    meanx = sumx / sumw
+    meany = sumy / sumw
+
+    xm = x - meanx
+    ym = y - meany
+    xyw = (xm * ym * w).sum()
+    x2w = (xm * xm * w).sum()
+    y2w = (ym * ym * w).sum()
+
+    # angle
+    den = 2 * xyw
+    left = x2w - y2w
+    right = np.sqrt( (x2w - y2w)**2 + 4 * xyw * xyw)
+    num1 = left + right
+    tantheta1 = - num1 / den
+    num2 = left - right
+    tantheta2 = - num2 / den
+    theta1 = np.arctan(tantheta1) # clockwise rotation of y-axix
+    theta2 = np.arctan(tantheta2) 
+    
+    
+
+    # semi-major/minor axis length
+
+    term1 = (w * (ym * np.cos(theta1) - xm * np.sin(theta1))**2).sum()
+    term2 = (w * (ym * np.cos(theta2) - xm * np.sin(theta2))**2).sum()
+
+    sx = np.sqrt(term1 / sumw)
+    sy = np.sqrt(term2 / sumw)
+
+
+
+    # corrections
+    n = xm.shape[0]
+    sqrn = np.sqrt(n)
+    sqr2 = np.sqrt(2)
+    sqrdof = np.sqrt(n - 2)
+    
+    if method == 2:
+        sx = sx * (sqr2 * sqrn / sqrdof )
+        sy = sy * (sqr2 * sqrn / sqrdof )
+        print('method 2')
+    if crimestatCorr and method !=2:
+        sx *= sqr2
+        sy *= sqr2
+        print('crimestatCorr')
+
+    if degfreedCorr and method !=2:
+        sx *= sqrn / sqrdof
+        sy *= sqrn / sqrdof
+        print('degreedCorr')
+
+    majorangle = theta1
+    minorangle = theta2
+    majoraxis = sy
+    minoraxis = sx
+    if sy < sx:
+        majorangle = theta2
+        minorangle = theta1
+        majoraxis = sx
+        minoraxis = sy
+
+    return majoraxis, minoraxis, majorangle, meanx, meany
+    
+
 
 @ellipse.register
 def _(points: GeoPandasBase) -> shapely.Polygon:
