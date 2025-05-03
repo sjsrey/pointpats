@@ -30,3 +30,6 @@ doc/generated
 
 docs/_build
 docs/generated
+# pixi environments
+.pixi
+*.egg-info
