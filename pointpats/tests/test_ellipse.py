@@ -21,6 +21,13 @@ def sample_coords():
     ])
 
 @pytest.fixture
+def sample_points():
+    seed = 65647437836358831880808032086803839626
+    rng = np.random.default_rng(seed)
+    points = rng.integers(0, 100, (50, 2))
+    return points
+
+@pytest.fixture
 def sample_weights():
     return np.arange(1, 12)
 
@@ -76,3 +83,74 @@ def test_weights_length_mismatch(sample_coords):
     wrong_weights = np.arange(5)
     with pytest.raises(ValueError):
         ellipse(sample_coords, weights=wrong_weights)
+
+def test_unweighted(sample_points):
+    result = ellipse(sample_points)
+    expected = (np.float64(43.85494662229593),
+                np.float64(36.28453973005919),
+                np.float64(-0.9362557045365753))
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+    for r, e in zip(result, expected):
+        assert isinstance(r, np.float64)
+        np.testing.assert_almost_equal(r, e, decimal=8)
+
+        
+def test_weighted(sample_points):
+    points = sample_points
+    points_gdf = gpd.GeoDataFrame(geometry=gpd.points_from_xy(points[:,0], points[:,1]))
+
+    result = ellipse(points_gdf, weights=sample_points[:,1]).area
+    expected = 4085.3662956683897
+    np.testing.assert_almost_equal(result, expected, decimal=8)
+
+def test_params(sample_points):
+    result = ellipse(sample_points)
+    expected = (np.float64(43.85494662229593),
+                np.float64(36.28453973005919),
+                np.float64(-0.9362557045365753))
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+    for r, e in zip(result, expected):
+        assert isinstance(r, np.float64)
+        np.testing.assert_almost_equal(r, e, decimal=8)
+
+    result = ellipse(sample_points, method='yuill')
+    expected = (np.float64(43.85494662229593),
+                np.float64(36.28453973005919),
+                np.float64(-0.9362557045365753))
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+    for r, e in zip(result, expected):
+        assert isinstance(r, np.float64)
+        np.testing.assert_almost_equal(r, e, decimal=8)
+
+    result = ellipse(sample_points, method='yuill', crimestatCorr=False)
+    expected = (np.float64(31.01013014519952),
+                np.float64(25.65704409535755),
+                np.float64(-0.9362557045365753))
+    assert len(result) == 3
+    for r, e in zip(result, expected):
+        assert isinstance(r, np.float64)
+        np.testing.assert_almost_equal(r, e, decimal=8)
+
+    result = ellipse(sample_points, method='yuill', degfreedCorr=False)
+    expected = (np.float64(42.96889676864705),
+                np.float64(35.551443156155464),
+                np.float64(-0.9362557045365753))
+    assert len(result) == 3
+    for r, e in zip(result, expected):
+        assert isinstance(r, np.float64)
+        np.testing.assert_almost_equal(r, e, decimal=8)
+
+
+    result = ellipse(sample_points, method='yuill',
+                     crimestatCorr=False,
+                     degfreedCorr=False)
+    expected = (np.float64(30.383598285215058),
+                np.float64(25.138666536685605),
+                np.float64(-0.9362557045365753))
+    assert len(result) == 3
+    for r, e in zip(result, expected):
+        assert isinstance(r, np.float64)
+        np.testing.assert_almost_equal(r, e, decimal=8)
