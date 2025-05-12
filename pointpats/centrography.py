@@ -15,6 +15,7 @@ __all__ = [
     "std_distance",
     "euclidean_median",
     "ellipse",
+    "ellipse_w",
     "minimum_rotated_rectangle",
     "minimum_bounding_rectangle",
     "minimum_bounding_circle",
@@ -681,55 +682,83 @@ def _(points: np.ndarray) -> tuple[float, float, float]:
     sy = np.sqrt(sy)
     return sx, sy, -theta
 
+@ellipse.register
+def _(points: GeoPandasBase) -> shapely.Polygon:
+    coords = shapely.get_coordinates(points.geometry)
+    major, minor, rotation = ellipse(coords)
+    centre = mean_center(points).buffer(1)
+    scaled = shapely.affinity.scale(centre, major, minor)
+    rotated = shapely.affinity.rotate(scaled, rotation, use_radians=True)
+    return rotated
 
-def ellipse_w(points, weight_column=None, method="crimestat", 
+
+
+@singledispatch
+def ellipse_w(points, weights=None, method="crimestat", 
               crimestatCorr=True, degfreedCorr=True):
     """
     Computes a weighted standard deviational ellipse for a set of point geometries.
 
     Parameters:
-        points (GeoDataFrame): GeoPandas object with Point geometries.
-        weight_column (str, optional): Name of the column with weights.
+        points : arraylike
+                 array representing a point pattern
+        weights : arraylike
+                 array of weights for each point (Optional)
         method (str): Correction method to apply. Must be 'crimestat' or 'yuill'.
         crimestatCorr (bool): Apply CrimeStat correction if method == 'yuill'.
         degfreedCorr (bool): Apply degrees-of-freedom correction if method == 'yuill'.
 
     Returns:
-        tuple: (major_axis_length, minor_axis_length, rotation_angle,
-                mean_x, mean_y)
+        tuple: (major_axis_length, minor_axis_length, rotation_angle)
     """
+    try:
+        points = np.asarray(points)
+        return ellipse_w(points, weights, method,
+                          crimestatCorr, degfreedCorr)
+    except AttributeError as e:
+        raise NotImplementedError
+
+
+@ellipse_w.register
+def _(
+    points: np.ndarray,
+    weights=None,
+    method='crimestat',
+    crimestatCorr=True,
+    degfreedCorr=True ) -> tuple[float, float, float]:
+
+    print(">>> Called ellipse_w for np.array")
+
+    method = method.lower()
     if method not in ("crimestat", "yuill"):
         raise ValueError("`method` must be either 'crimestat' or 'yuill'")
 
-    # Extract coordinates
-    x = points.geometry.x
-    y = points.geometry.y
+    x = points[:, 0]
+    y = points[:, 1]
 
-    # Set weights
-    if weight_column:
-        w = points[weight_column].to_numpy()
+    if weights is None:
+        weights = np.ones(len(points))
     else:
-        w = np.ones(len(points))
-
-    # Weighted means
+        weights = np.asarray(weights)
+        if len(weights) != len(points):
+            raise ValueError("weights must have same length as points")
+        
+    w = weights
     sumw = w.sum()
     meanx = np.average(x, weights=w)
     meany = np.average(y, weights=w)
 
-    # Centered coordinates
     xm = x - meanx
     ym = y - meany
 
-    # Weighted second moments
     xyw = np.sum(xm * ym * w)
     x2w = np.sum(xm**2 * w)
     y2w = np.sum(ym**2 * w)
 
-    # Rotation angles (theta1, theta2)
     den = 2 * xyw
     left = x2w - y2w
     right = np.sqrt(left**2 + 4 * xyw**2)
-    
+
     if den == 0:
         theta1 = 0
         theta2 = np.pi / 2
@@ -737,14 +766,12 @@ def ellipse_w(points, weight_column=None, method="crimestat",
         theta1 = np.arctan(-(left + right) / den)
         theta2 = np.arctan(-(left - right) / den)
 
-    # Axis lengths
     term1 = np.sum(w * (ym * np.cos(theta1) - xm * np.sin(theta1))**2)
     term2 = np.sum(w * (ym * np.cos(theta2) - xm * np.sin(theta2))**2)
 
     sx = np.sqrt(term1 / sumw)
     sy = np.sqrt(term2 / sumw)
 
-    # Corrections
     n = len(points)
     if method == "crimestat":
         correction = (np.sqrt(2) * np.sqrt(n)) / np.sqrt(n - 2)
@@ -758,21 +785,28 @@ def ellipse_w(points, weight_column=None, method="crimestat",
             sx *= np.sqrt(n) / np.sqrt(n - 2)
             sy *= np.sqrt(n) / np.sqrt(n - 2)
 
-    # Assign major/minor axis and corresponding angle
     if sy > sx:
         major_axis, minor_axis = sy, sx
-        major_angle, minor_angle = theta1, theta2
+        major_angle = theta1
     else:
         major_axis, minor_axis = sx, sy
-        major_angle, minor_angle = theta2, theta1
+        major_angle = theta2
 
     return major_axis, minor_axis, major_angle
 
-
-@ellipse.register
-def _(points: GeoPandasBase) -> shapely.Polygon:
+@ellipse_w.register
+def _(points: GeoPandasBase,
+      weights=None,
+      method='crimestat',
+      crimestatCorr=True,
+      degfreedCorr=True) -> shapely.Polygon:
+    print(">>> Called ellipse_w for GeoPandasBase")
     coords = shapely.get_coordinates(points.geometry)
-    major, minor, rotation = ellipse(coords)
+    major, minor, rotation = ellipse_w(coords,
+                                       weights=weights,
+                                       method=method,
+                                       crimestatCorr=crimestatCorr,
+                                       degfreedCorr=degfreedCorr)
     centre = mean_center(points).buffer(1)
     scaled = shapely.affinity.scale(centre, major, minor)
     rotated = shapely.affinity.rotate(scaled, rotation, use_radians=True)
