@@ -624,9 +624,6 @@ def _(
     method='crimestat',
     crimestatCorr=True,
     degfreedCorr=True ) -> tuple[float, float, float]:
-
-    print(">>> Called ellipse for np.array")
-
     method = method.lower()
     if method not in ("crimestat", "yuill"):
         raise ValueError("`method` must be either 'crimestat' or 'yuill'")
@@ -698,14 +695,17 @@ def _(points: GeoPandasBase,
       method='crimestat',
       crimestatCorr=True,
       degfreedCorr=True) -> shapely.Polygon:
-    print(">>> Called ellipse for GeoPandasBase")
     coords = shapely.get_coordinates(points.geometry)
     major, minor, rotation = ellipse(coords,
                                        weights=weights,
                                        method=method,
                                        crimestatCorr=crimestatCorr,
                                        degfreedCorr=degfreedCorr)
-    centre = mean_center(points).buffer(1)
+    if weights is None:
+        centre = mean_center(points).buffer(1)
+    else:
+        centre = weighted_mean_center(points, weights=weights).buffer(1)
+        
     scaled = shapely.affinity.scale(centre, major, minor)
     rotated = shapely.affinity.rotate(scaled, rotation, use_radians=True)
     return rotated
