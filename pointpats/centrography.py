@@ -15,7 +15,6 @@ __all__ = [
     "std_distance",
     "euclidean_median",
     "ellipse",
-    "ellipse_w",
     "minimum_rotated_rectangle",
     "minimum_bounding_rectangle",
     "minimum_bounding_circle",
@@ -591,110 +590,9 @@ def _(points: GeoPandasBase) -> np.float64:
     return std_distance(coords)
 
 
-@singledispatch
-def ellipse(points):
-    """
-    Calculate parameters of standard deviational ellipse for a point pattern.
-
-    Parameters
-    ----------
-    points : arraylike
-             array representing a point pattern
-
-    Returns
-    -------
-    ellipse
-        representation of the standard ellipse
-
-    Notes
-    -----
-    Implements approach from:
-
-               Ebdon, D. (1985) Statistics in Geography. Basil Blackwell. Second Edition.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import geopandas as gpd
-
-    Create an array of point coordinates.
-
-    >>> coords = np.array(
-    ...     [
-    ...         [66.22, 32.54],
-    ...         [22.52, 22.39],
-    ...         [31.01, 81.21],
-    ...         [9.47, 31.02],
-    ...         [30.78, 60.10],
-    ...         [75.21, 58.93],
-    ...         [79.26, 7.68],
-    ...         [8.23, 39.93],
-    ...         [98.73, 77.17],
-    ...         [89.78, 42.53],
-    ...         [65.19, 92.08],
-    ...     ]
-    ... )
-
-    Passing an array of coordinates returns a tuple capturing the semi-major axis,
-    semi-minor axis and clockwise rotation angle of the ellipse.
-
-    >>> ellipse(coords)
-    (np.float64(24.27432576090484), np.float64(32.063444153774746), np.float64(-1.2242381172906325))
-
-    Passing a GeoPandas object returns a shapely geometry.
-
-    >>> geoms = gpd.GeoSeries.from_xy(*coords.T)
-    >>> ellipse(geoms)
-    <POLYGON ((60.645 26.767, 57.649 25.809, 54.603 25.081, 51.536 24.589, 48.47...>
-    """  # noqa: E501
-    try:
-        points = np.asarray(points)
-        return ellipse(points)
-    except AttributeError as e:
-        raise NotImplementedError from e
-
-
-@ellipse.register
-def _(points: np.ndarray) -> tuple[float, float, float]:
-    n, _ = points.shape
-    x = points[:, 0]
-    y = points[:, 1]
-    xd = x - x.mean()
-    yd = y - y.mean()
-    xss = (xd * xd).sum()
-    yss = (yd * yd).sum()
-    cv = (xd * yd).sum()
-    num = (xss - yss) + np.sqrt((xss - yss) ** 2 + 4 * (cv) ** 2)
-    den = 2 * cv
-    theta = np.arctan(num / den)  # tan_theta = num/den
-    if theta < 0:
-        theta = np.pi / 2 + theta
-    cos = np.cos(theta)
-    sin = np.sin(theta)
-    cos2 = cos**2
-    sin2 = sin**2
-    sincos = sin * cos
-    sx = xss * cos2 - 2 * cv * sincos + yss * sin2
-    sx /= n
-    sx = np.sqrt(sx)
-    sy = xss * sin2 + 2 * cv * sincos + yss * cos2
-    sy /= n
-    sy = np.sqrt(sy)
-    return sx, sy, -theta
-
-@ellipse.register
-def _(points: GeoPandasBase) -> shapely.Polygon:
-    coords = shapely.get_coordinates(points.geometry)
-    major, minor, rotation = ellipse(coords)
-    centre = mean_center(points).buffer(1)
-    scaled = shapely.affinity.scale(centre, major, minor)
-    rotated = shapely.affinity.rotate(scaled, rotation, use_radians=True)
-    return rotated
-
-
 
 @singledispatch
-def ellipse_w(points, weights=None, method="crimestat", 
+def ellipse(points, weights=None, method="crimestat", 
               crimestatCorr=True, degfreedCorr=True):
     """
     Computes a weighted standard deviational ellipse for a set of point geometries.
@@ -713,13 +611,13 @@ def ellipse_w(points, weights=None, method="crimestat",
     """
     try:
         points = np.asarray(points)
-        return ellipse_w(points, weights, method,
+        return ellipse(points, weights, method,
                           crimestatCorr, degfreedCorr)
     except AttributeError as e:
         raise NotImplementedError
 
 
-@ellipse_w.register
+@ellipse.register
 def _(
     points: np.ndarray,
     weights=None,
@@ -727,7 +625,7 @@ def _(
     crimestatCorr=True,
     degfreedCorr=True ) -> tuple[float, float, float]:
 
-    print(">>> Called ellipse_w for np.array")
+    print(">>> Called ellipse for np.array")
 
     method = method.lower()
     if method not in ("crimestat", "yuill"):
@@ -794,15 +692,15 @@ def _(
 
     return major_axis, minor_axis, major_angle
 
-@ellipse_w.register
+@ellipse.register
 def _(points: GeoPandasBase,
       weights=None,
       method='crimestat',
       crimestatCorr=True,
       degfreedCorr=True) -> shapely.Polygon:
-    print(">>> Called ellipse_w for GeoPandasBase")
+    print(">>> Called ellipse for GeoPandasBase")
     coords = shapely.get_coordinates(points.geometry)
-    major, minor, rotation = ellipse_w(coords,
+    major, minor, rotation = ellipse(coords,
                                        weights=weights,
                                        method=method,
                                        crimestatCorr=crimestatCorr,
