@@ -4,7 +4,7 @@ import shapely
 from scipy import spatial
 from shapely.geometry import box
 
-from pointpats import f, g, j, k, l
+from pointpats import f, g, j, k, l, localK, localL
 from pointpats.distance_statistics import (
     FEstResult,
     GEstResult,
@@ -1262,3 +1262,223 @@ class TestLDefault:
         result = l(coords, hull=poly, support=support)
         beyond = support > max_r
         assert np.all(np.isnan(result.border[beyond]))
+
+
+# ---------------------------------------------------------------------------
+# Local K function tests
+# ---------------------------------------------------------------------------
+
+
+class TestLocalKNone:
+    """localK with edge_correction=None (uncorrected)."""
+
+    def test_output_shapes(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support, lk = localK(coords, hull=poly, support=10, edge_correction=None)
+        assert support.shape == (10,)
+        assert lk.shape == (10, len(coords))
+
+    def test_starts_at_zero(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support, lk = localK(coords, hull=poly, support=10, edge_correction=None)
+        np.testing.assert_array_equal(lk[0], 0.0)
+
+    def test_non_negative(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, lk = localK(coords, hull=poly, support=10, edge_correction=None)
+        assert np.all(lk >= 0.0)
+
+    def test_monotone_per_point(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, lk = localK(coords, hull=poly, support=15, edge_correction=None)
+        assert np.all(np.diff(lk, axis=0) >= -1e-12)
+
+    def test_none_string_aliases_none(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support = np.linspace(0, 3, 8)
+        _, lk1 = localK(coords, hull=poly, support=support, edge_correction=None)
+        _, lk2 = localK(coords, hull=poly, support=support, edge_correction="none")
+        np.testing.assert_array_equal(lk1, lk2)
+
+    def test_invalid_correction_raises(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        with pytest.raises(ValueError, match="edge_correction must be one of"):
+            localK(coords, hull=poly, edge_correction="ripley")
+
+    def test_no_hull_defaults_to_bbox(self, coords_and_poly):
+        coords, _ = coords_and_poly
+        support, lk = localK(coords, support=8, edge_correction=None)
+        assert lk.shape == (8, len(coords))
+
+    def test_deterministic(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support = np.linspace(0, 3, 8)
+        _, lk1 = localK(coords, hull=poly, support=support, edge_correction=None)
+        _, lk2 = localK(coords, hull=poly, support=support, edge_correction=None)
+        np.testing.assert_array_equal(lk1, lk2)
+
+
+class TestLocalKIsotropic:
+    """localK with edge_correction='isotropic' (the default)."""
+
+    def test_output_shapes(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support, lk = localK(coords, hull=poly, support=10)
+        assert support.shape == (10,)
+        assert lk.shape == (10, len(coords))
+
+    def test_starts_at_zero(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, lk = localK(coords, hull=poly, support=10)
+        np.testing.assert_array_equal(lk[0], 0.0)
+
+    def test_non_negative(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, lk = localK(coords, hull=poly, support=10)
+        assert np.all(lk >= 0.0)
+
+    def test_monotone_per_point(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, lk = localK(coords, hull=poly, support=15)
+        assert np.all(np.diff(lk, axis=0) >= -1e-12)
+
+    def test_default_correction_is_isotropic(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support = np.linspace(0, 3, 8)
+        _, lk_default = localK(coords, hull=poly, support=support)
+        _, lk_iso = localK(coords, hull=poly, support=support, edge_correction="isotropic")
+        np.testing.assert_array_equal(lk_default, lk_iso)
+
+    def test_geq_uncorrected(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support = np.linspace(0, 3, 8)
+        _, lk_none = localK(coords, hull=poly, support=support, edge_correction=None)
+        _, lk_iso = localK(coords, hull=poly, support=support, edge_correction="isotropic")
+        assert np.all(lk_iso >= lk_none - 1e-10)
+
+    def test_interior_points_match_uncorrected(self):
+        coords = np.array([[5.0, 5.0], [5.5, 5.0], [5.0, 5.5], [5.5, 5.5]])
+        poly = shapely.box(0, 0, 10, 10)
+        support = np.array([0.0, 0.6, 0.8])
+        _, lk_none = localK(coords, hull=poly, support=support, edge_correction=None)
+        _, lk_iso = localK(coords, hull=poly, support=support, edge_correction="isotropic")
+        np.testing.assert_allclose(lk_iso, lk_none)
+
+    def test_csr_mean_approx_pi_r_squared(self):
+        rng = np.random.default_rng(0)
+        coords = rng.uniform(0, 20, (300, 2))
+        poly = shapely.box(0, 0, 20, 20)
+        support, lk = localK(coords, hull=poly, support=15, edge_correction="isotropic")
+        mean_lk = lk.mean(axis=1)
+        expected = np.pi * support**2
+        mid = len(support) // 2
+        np.testing.assert_allclose(mean_lk[1:mid], expected[1:mid], rtol=0.30)
+
+
+class TestLocalKTranslate:
+    """localK with edge_correction='translate'."""
+
+    def test_output_shapes(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support, lk = localK(coords, hull=poly, support=10, edge_correction="translate")
+        assert support.shape == (10,)
+        assert lk.shape == (10, len(coords))
+
+    def test_starts_at_zero(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, lk = localK(coords, hull=poly, support=10, edge_correction="translate")
+        np.testing.assert_array_equal(lk[0], 0.0)
+
+    def test_non_negative(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, lk = localK(coords, hull=poly, support=10, edge_correction="translate")
+        assert np.all(lk >= 0.0)
+
+    def test_monotone_per_point(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, lk = localK(coords, hull=poly, support=15, edge_correction="translate")
+        assert np.all(np.diff(lk, axis=0) >= -1e-12)
+
+    def test_geq_uncorrected(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support = np.linspace(0, 3, 8)
+        _, lk_none = localK(coords, hull=poly, support=support, edge_correction=None)
+        _, lk_tra = localK(coords, hull=poly, support=support, edge_correction="translate")
+        assert np.all(lk_tra >= lk_none - 1e-10)
+
+    def test_csr_mean_approx_pi_r_squared(self):
+        rng = np.random.default_rng(1)
+        coords = rng.uniform(0, 20, (300, 2))
+        poly = shapely.box(0, 0, 20, 20)
+        support, lk = localK(coords, hull=poly, support=15, edge_correction="translate")
+        mean_lk = lk.mean(axis=1)
+        expected = np.pi * support**2
+        mid = len(support) // 2
+        np.testing.assert_allclose(mean_lk[1:mid], expected[1:mid], rtol=0.30)
+
+
+# ---------------------------------------------------------------------------
+# Local L function tests
+# ---------------------------------------------------------------------------
+
+
+class TestLocalL:
+    """localL — per-point L function."""
+
+    def test_local_l_is_sqrt_local_k_over_pi(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support = np.linspace(0, 3, 10)
+        _, lk = localK(coords, hull=poly, support=support)
+        _, ll = localL(coords, hull=poly, support=support)
+        np.testing.assert_allclose(ll, np.sqrt(lk / np.pi))
+
+    def test_output_shapes(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support, ll = localL(coords, hull=poly, support=10)
+        assert support.shape == (10,)
+        assert ll.shape == (10, len(coords))
+
+    def test_starts_at_zero(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, ll = localL(coords, hull=poly, support=10)
+        np.testing.assert_array_equal(ll[0], 0.0)
+
+    def test_non_negative(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, ll = localL(coords, hull=poly, support=10)
+        assert np.all(ll >= 0.0)
+
+    def test_monotone_per_point(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        _, ll = localL(coords, hull=poly, support=15)
+        assert np.all(np.diff(ll, axis=0) >= -1e-12)
+
+    def test_linearized_shifts_by_support(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support = np.linspace(0, 3, 10)
+        _, ll = localL(coords, hull=poly, support=support)
+        _, ll_lin = localL(coords, hull=poly, support=support, linearized=True)
+        np.testing.assert_allclose(ll_lin, ll - support[:, np.newaxis])
+
+    def test_linearized_csr_near_zero(self):
+        rng = np.random.default_rng(2)
+        coords = rng.uniform(0, 20, (300, 2))
+        poly = shapely.box(0, 0, 20, 20)
+        support, ll_lin = localL(
+            coords, hull=poly, support=15, linearized=True
+        )
+        mean_ll_lin = ll_lin.mean(axis=1)
+        mid = len(support) // 2
+        assert np.abs(mean_ll_lin[1:mid]).max() < 0.5
+
+    def test_translate_correction_consistent(self, coords_and_poly):
+        coords, poly = coords_and_poly
+        support = np.linspace(0, 3, 8)
+        _, lk = localK(coords, hull=poly, support=support, edge_correction="translate")
+        _, ll = localL(coords, hull=poly, support=support, edge_correction="translate")
+        np.testing.assert_allclose(ll, np.sqrt(lk / np.pi))
+
+    def test_no_hull_defaults_to_bbox(self, coords_and_poly):
+        coords, _ = coords_and_poly
+        support, ll = localL(coords, support=8)
+        assert ll.shape == (8, len(coords))
