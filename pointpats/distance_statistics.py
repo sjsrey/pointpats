@@ -21,6 +21,8 @@ __all__ = [
     "k",
     "j",
     "l",
+    "localK",
+    "localL",
     "f_test",
     "g_test",
     "k_test",
@@ -215,6 +217,61 @@ def _translate_pair_weights(coordinates, poly, area):
     orig_array = numpy.full(n_pairs, poly)
     overlap_areas = shapely.area(shapely.intersection(orig_array, shifted_polys))
     return numpy.where(overlap_areas > 0, area * area / overlap_areas, area * area)
+
+
+def _local_pair_isotropic_weights(focal_coords, pair_dists, poly):
+    """Ripley isotropic correction weights for directed (focal, distance) pairs.
+
+    For each pair (focal_i, d_ij): weight = 2π·d_ij / arc_inside(focal_i, d_ij).
+    Pairs whose circle lies fully inside poly get weight 1.
+    """
+    n_pairs = len(pair_dists)
+    if n_pairs == 0:
+        return numpy.array([])
+    shapely_focal = shapely.points(focal_coords[:, 0], focal_coords[:, 1])
+    dist_to_boundary = shapely.distance(shapely_focal, poly.boundary)
+    weights = numpy.ones(n_pairs)
+    near = dist_to_boundary < pair_dists
+    if not near.any():
+        return weights
+    idx = numpy.where(near)[0]
+    focal_near = shapely_focal[idx]
+    dists_near = pair_dists[idx]
+    circles = shapely.buffer(focal_near, dists_near)
+    arc_inside = shapely.intersection(shapely.boundary(circles), poly)
+    arc_lengths = shapely.length(arc_inside)
+    circumferences = 2.0 * numpy.pi * dists_near
+    weights[idx] = numpy.where(arc_lengths > 0, circumferences / arc_lengths, 1.0)
+    return weights
+
+
+def _local_pair_translate_weights(focal_coords, neighbor_coords, poly, area):
+    """Translation correction weights for directed pairs: area(W) / area(W ∩ (W + h_ij)).
+
+    h_ij = neighbor_coords − focal_coords.  Returns area/overlap (not area²/overlap)
+    because local K normalises by λ₁ = (n−1)/area rather than λ² = (n/area)².
+    """
+    n_pairs = len(focal_coords)
+    if n_pairs == 0:
+        return numpy.array([])
+    translations = neighbor_coords - focal_coords
+    exterior_coords = numpy.array(poly.exterior.coords)
+    shifted_exterior = exterior_coords[None] + translations[:, None]
+    interior_rings = list(poly.interiors)
+    if not interior_rings:
+        shifted_polys = shapely.polygons(shapely.linearrings(shifted_exterior))
+    else:
+        shifted_polys = numpy.empty(n_pairs, dtype=object)
+        for k_idx in range(n_pairs):
+            shell = shapely.linearrings(shifted_exterior[k_idx])
+            holes = [
+                shapely.linearrings(numpy.array(ring.coords) + translations[k_idx])
+                for ring in interior_rings
+            ]
+            shifted_polys[k_idx] = shapely.polygons(shell, holes)
+    orig_array = numpy.full(n_pairs, poly)
+    overlap_areas = shapely.area(shapely.intersection(orig_array, shifted_polys))
+    return numpy.where(overlap_areas > 0, area / overlap_areas, 1.0)
 
 
 def _kaplan_meier_cdf(obs_times, events):
@@ -1119,6 +1176,175 @@ def l(  # noqa: E743 - Ambiguous function name
     if linearized:
         return support, _l - support
     return support, _l
+
+
+def localK(
+    coordinates,
+    support=None,
+    metric="euclidean",
+    hull=None,
+    edge_correction="isotropic",
+):
+    """Local K function (Getis & Franklin 1987)
+
+    Computes a per-point version of Ripley's K function.  For each point i,
+    ``K_i(r)`` estimates the expected number of additional points within
+    distance ``r`` of i, normalised by the (n−1)/area intensity.
+
+    This follows the ``localK`` / ``localKengine`` implementation in the R
+    package *spatstat* (Baddeley & Turner 2005).
+
+    Parameters
+    ----------
+    coordinates : geopandas object | numpy.ndarray of shape (n,2)
+        input coordinates
+    support : tuple of length 1, 2, or 3, int, or numpy.ndarray
+        tuple, encoding (stop,), (start, stop), or (start, stop, num)
+        int, encoding number of equally-spaced intervals
+        numpy.ndarray, used directly
+    metric : str or callable
+        distance metric to use when building the search tree
+    hull : bounding box, scipy.spatial.ConvexHull, shapely.geometry.Polygon, or None
+        the study area geometry; required for edge corrections
+    edge_correction : None, 'none', 'isotropic', or 'translate'
+        edge correction method.
+        ``None`` / ``'none'``: uncorrected estimator.
+        ``'isotropic'``: Ripley's isotropic correction — each pair (i, j) is
+            weighted by ``2π·d_ij / arc_inside(x_i, d_ij)`` (default, matches
+            spatstat's ``correction="Ripley"``).
+        ``'translate'``: translation correction — each directed pair (i, j) is
+            weighted by ``area(W) / area(W ∩ (W + x_j − x_i))``.
+
+    Returns
+    -------
+    support : numpy.ndarray of shape (n_support,)
+        distance values at which K is evaluated
+    local_k : numpy.ndarray of shape (n_support, n)
+        ``local_k[:, i]`` is the local K function for point i;
+        theoretical value for CSR is ``π r²``
+    """
+    _valid_lk = (None, "none", "isotropic", "translate")
+    if edge_correction not in _valid_lk:
+        raise ValueError(
+            f"edge_correction must be one of {_valid_lk}. Got {edge_correction!r}"
+        )
+
+    coordinates, support, _, metric, hull_prepared, _ = _prepare(
+        coordinates, support, None, metric, hull, None
+    )
+    n = len(coordinates)
+    poly = _hull_to_poly(hull_prepared)
+    area_W = _area(poly)
+    lambda1_ave = (n - 1) / area_W
+    r_max = float(support.max())
+
+    # Collect all ordered (directed) close pairs in bulk.
+    tree = _build_best_tree(coordinates, metric)
+    if hasattr(tree, "query_radius"):  # sklearn KDTree / BallTree
+        all_nbrs, all_dists = tree.query_radius(
+            coordinates, r_max, return_distance=True
+        )
+        counts = numpy.array([len(nb) for nb in all_nbrs])
+        J_all = numpy.concatenate(list(all_nbrs)).astype(int) if counts.sum() else numpy.array([], dtype=int)
+        D_all = numpy.concatenate(list(all_dists)) if counts.sum() else numpy.array([])
+    else:  # scipy KDTree / Arc_KDTree
+        all_nbrs_lists = tree.query_ball_point(coordinates, r_max)
+        nb_arrays = [numpy.array(nb, dtype=int) for nb in all_nbrs_lists]
+        counts = numpy.array([len(nb) for nb in nb_arrays])
+        if counts.sum():
+            J_all = numpy.concatenate(nb_arrays)
+            D_all = numpy.concatenate([
+                numpy.linalg.norm(coordinates[nb] - coordinates[i], axis=1)
+                if len(nb) else numpy.array([])
+                for i, nb in enumerate(nb_arrays)
+            ])
+        else:
+            J_all = numpy.array([], dtype=int)
+            D_all = numpy.array([])
+
+    I_all = numpy.repeat(numpy.arange(n), counts)
+    not_self = J_all != I_all
+    I_arr = I_all[not_self]
+    J_arr = J_all[not_self]
+    D_arr = D_all[not_self]
+
+    # Per-pair edge correction weights.
+    if edge_correction in (None, "none"):
+        pair_weights = numpy.ones(len(I_arr))
+    elif edge_correction == "isotropic":
+        pair_weights = _local_pair_isotropic_weights(coordinates[I_arr], D_arr, poly)
+    else:  # "translate"
+        pair_weights = _local_pair_translate_weights(
+            coordinates[I_arr], coordinates[J_arr], poly, area_W
+        )
+
+    # Build local_k via a single sort + incremental accumulation over support.
+    local_k = numpy.zeros((len(support), n))
+    if len(D_arr) > 0:
+        order = numpy.argsort(D_arr, kind="stable")
+        D_sorted = D_arr[order]
+        I_sorted = I_arr[order]
+        W_sorted = pair_weights[order]
+        support_positions = numpy.searchsorted(D_sorted, support, side="right")
+
+        cumulative = numpy.zeros(n)
+        prev_pos = 0
+        for r_idx, pos in enumerate(support_positions):
+            if pos > prev_pos:
+                numpy.add.at(cumulative, I_sorted[prev_pos:pos], W_sorted[prev_pos:pos])
+                prev_pos = pos
+            local_k[r_idx] = cumulative
+
+    local_k /= lambda1_ave
+    return support, local_k
+
+
+def localL(
+    coordinates,
+    support=None,
+    metric="euclidean",
+    hull=None,
+    edge_correction="isotropic",
+    linearized=False,
+):
+    """Local L function
+
+    A per-point version of Ripley's L function:
+
+        L_i(r) = sqrt(K_i(r) / π)
+
+    For a homogeneous Poisson process, ``E[L_i(r)] ≈ r`` at all distances.
+
+    Parameters
+    ----------
+    coordinates : geopandas object | numpy.ndarray of shape (n,2)
+        input coordinates
+    support : tuple of length 1, 2, or 3, int, or numpy.ndarray
+    metric : str or callable
+    hull : bounding box, scipy.spatial.ConvexHull, shapely.geometry.Polygon, or None
+    edge_correction : None, 'none', 'isotropic', or 'translate'
+        see :func:`localK` for details
+    linearized : bool
+        if True, return ``L_i(r) − r`` (Besag 1977 centering), so the
+        theoretical value for CSR is 0 at all distances
+
+    Returns
+    -------
+    support : numpy.ndarray of shape (n_support,)
+    local_l : numpy.ndarray of shape (n_support, n)
+        ``local_l[:, i]`` is the local L function for point i
+    """
+    support, local_k = localK(
+        coordinates,
+        support=support,
+        metric=metric,
+        hull=hull,
+        edge_correction=edge_correction,
+    )
+    local_l = numpy.sqrt(numpy.maximum(local_k, 0.0) / numpy.pi)
+    if linearized:
+        return support, local_l - support[:, numpy.newaxis]
+    return support, local_l
 
 
 # ------------------------------------------------------------#
