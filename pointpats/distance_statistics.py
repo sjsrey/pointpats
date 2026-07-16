@@ -51,7 +51,7 @@ LEstResult = namedtuple(
 )
 
 
-def _prepare(coordinates, support, distances, metric, hull, edge_correction):
+def _prepare(coordinates, support, distances, metric, hull):
     """
     prepare the arguments to convert into a standard format
     1. cast the coordinates to a numpy array
@@ -70,10 +70,6 @@ def _prepare(coordinates, support, distances, metric, hull, edge_correction):
                                       from start to stop
         - numpy.ndarray -> passed through
     """
-    # Throw early if edge correction is requested
-    if edge_correction is not None:
-        raise NotImplementedError("Edge correction is not currently implemented.")
-
     if isinstance(coordinates, geopandas.GeoDataFrame | geopandas.GeoSeries):
         coordinates = shapely.get_coordinates(coordinates.geometry)
 
@@ -131,7 +127,7 @@ def _prepare(coordinates, support, distances, metric, hull, edge_correction):
                 f"the function. Received object of type {type(support)}: {support}"
             ) from None
 
-    return coordinates, support, distances, metric, hull, edge_correction
+    return coordinates, support, distances, metric, hull
 
 
 def _hull_to_poly(hull_prepared):
@@ -367,9 +363,8 @@ def f(
             f"edge_correction must be one of {_valid_f}. Got {edge_correction!r}"
         )
 
-    # _prepare raises NotImplementedError for non-None edge_correction; bypass.
-    coordinates, support, distances, metric, hull_prepared, _ = _prepare(
-        coordinates, support, distances, metric, hull, None
+    coordinates, support, distances, metric, hull_prepared = _prepare(
+        coordinates, support, distances, metric, hull
     )
     n = coordinates.shape[0]
 
@@ -412,7 +407,9 @@ def f(
         inters = shapely.intersection(disks, poly)
         inter_areas = shapely.area(inters)
         disk_areas = numpy.pi * test_dists**2
-        cs_w = numpy.where((inter_areas > 0) & (test_dists > 0), disk_areas / inter_areas, 1.0)
+        cs_w = numpy.where(
+            (inter_areas > 0) & (test_dists > 0), disk_areas / inter_areas, 1.0
+        )
         total_cs = cs_w.sum()
         f_cs = numpy.array([(cs_w[test_dists <= r]).sum() / total_cs for r in support])
 
@@ -497,7 +494,9 @@ def f(
     inters = shapely.intersection(disks, poly)
     inter_areas = shapely.area(inters)
     disk_areas = numpy.pi * test_dists**2
-    cs_w = numpy.where((inter_areas > 0) & (test_dists > 0), disk_areas / inter_areas, 1.0)
+    cs_w = numpy.where(
+        (inter_areas > 0) & (test_dists > 0), disk_areas / inter_areas, 1.0
+    )
     total_cs = cs_w.sum()
     f_values = numpy.array([(cs_w[test_dists <= r]).sum() / total_cs for r in support])
     return support, f_values
@@ -554,9 +553,8 @@ def g(
             f"edge_correction must be one of {_valid_g[:-1]}. Got {edge_correction!r}"
         )
 
-    # _prepare raises NotImplementedError for non-None edge_correction; bypass.
-    coordinates, support, distances, metric, hull_prepared, _ = _prepare(
-        coordinates, support, distances, metric, hull, None
+    coordinates, support, distances, metric, hull_prepared = _prepare(
+        coordinates, support, distances, metric, hull
     )
 
     # ------------------------------------------------------------------ #
@@ -757,15 +755,17 @@ def j(
     # ------------------------------------------------------------------ #
     if edge_correction is _NOTSET:
         # Build support on a common grid using _prepare
-        coords_arr, supp, _, metric_out, hull_prep, _ = _prepare(
-            coordinates, support, None, metric, hull, None
+        coords_arr, supp, _, metric_out, hull_prep = _prepare(
+            coordinates, support, None, metric, hull
         )
         poly = _hull_to_poly(hull_prep)
 
         theo = numpy.ones(len(supp))
 
         g_result = g(coords_arr, support=supp, hull=poly, edge_correction=_NOTSET)
-        f_result = f(coords_arr, support=supp, hull=poly, edge_correction=_NOTSET, rng=rng)
+        f_result = f(
+            coords_arr, support=supp, hull=poly, edge_correction=_NOTSET, rng=rng
+        )
 
         def _ratio(gv, fv):
             with numpy.errstate(invalid="ignore", divide="ignore"):
@@ -903,8 +903,8 @@ def k(
     """
     if edge_correction is _NOTSET:
         # Default: compute all three default corrections and return a named tuple.
-        coordinates_arr, support_arr, distances_out, metric, hull_prepared, _ = (
-            _prepare(coordinates, support, distances, metric, hull, None)
+        coordinates_arr, support_arr, distances_out, metric, hull_prepared = (
+            _prepare(coordinates, support, distances, metric, hull)
         )
         poly = _hull_to_poly(hull_prepared)
         theo = numpy.pi * support_arr**2
@@ -954,8 +954,8 @@ def k(
     use_isotropic = edge_correction == "isotropic"
     use_translate = edge_correction == "translate"
 
-    coordinates, support, distances, metric, hull_prepared, _ = _prepare(
-        coordinates, support, distances, metric, hull, None
+    coordinates, support, distances, metric, hull_prepared = _prepare(
+        coordinates, support, distances, metric, hull
     )
     n = coordinates.shape[0]
     upper_tri_n = n * (n - 1) * 0.5
@@ -1229,8 +1229,8 @@ def localK(
             f"edge_correction must be one of {_valid_lk}. Got {edge_correction!r}"
         )
 
-    coordinates, support, _, metric, hull_prepared, _ = _prepare(
-        coordinates, support, None, metric, hull, None
+    coordinates, support, _, metric, hull_prepared = _prepare(
+        coordinates, support, None, metric, hull
     )
     n = len(coordinates)
     poly = _hull_to_poly(hull_prepared)
@@ -1245,7 +1245,11 @@ def localK(
             coordinates, r_max, return_distance=True
         )
         counts = numpy.array([len(nb) for nb in all_nbrs])
-        J_all = numpy.concatenate(list(all_nbrs)).astype(int) if counts.sum() else numpy.array([], dtype=int)
+        J_all = (
+            numpy.concatenate(list(all_nbrs)).astype(int)
+            if counts.sum()
+            else numpy.array([], dtype=int)
+        )
         D_all = numpy.concatenate(list(all_dists)) if counts.sum() else numpy.array([])
     else:  # scipy KDTree / Arc_KDTree
         all_nbrs_lists = tree.query_ball_point(coordinates, r_max)
@@ -1253,11 +1257,14 @@ def localK(
         counts = numpy.array([len(nb) for nb in nb_arrays])
         if counts.sum():
             J_all = numpy.concatenate(nb_arrays)
-            D_all = numpy.concatenate([
-                numpy.linalg.norm(coordinates[nb] - coordinates[i], axis=1)
-                if len(nb) else numpy.array([])
-                for i, nb in enumerate(nb_arrays)
-            ])
+            D_all = numpy.concatenate(
+                [
+                    numpy.linalg.norm(coordinates[nb] - coordinates[i], axis=1)
+                    if len(nb)
+                    else numpy.array([])
+                    for i, nb in enumerate(nb_arrays)
+                ]
+            )
         else:
             J_all = numpy.array([], dtype=int)
             D_all = numpy.array([])
@@ -1279,20 +1286,30 @@ def localK(
         )
 
     # Build local_k via a single sort + incremental accumulation over support.
+    # Distances on rows, local counts on columns (focal)
     local_k = numpy.zeros((len(support), n))
     if len(D_arr) > 0:
+        # globally sort distances but
+        # ensure order is respected for duplicate pair distances
         order = numpy.argsort(D_arr, kind="stable")
         D_sorted = D_arr[order]
         I_sorted = I_arr[order]
         W_sorted = pair_weights[order]
+
+        # for each radius r in support find the index up to which all distances
+        # are <= r
         support_positions = numpy.searchsorted(D_sorted, support, side="right")
 
+        # walk the sorted pair list in a single left-to-right pass
+        # at each radius step accumulate newly added pairs
         cumulative = numpy.zeros(n)
         prev_pos = 0
         for r_idx, pos in enumerate(support_positions):
             if pos > prev_pos:
+                # unbuffered, element-by-element in-place addition
                 numpy.add.at(cumulative, I_sorted[prev_pos:pos], W_sorted[prev_pos:pos])
                 prev_pos = pos
+            # fill in row r_idx with weighted neighbor counts
             local_k[r_idx] = cumulative
 
     local_k /= lambda1_ave
